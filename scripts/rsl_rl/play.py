@@ -235,7 +235,7 @@ def run_play(task_id: str, cfg: PlayConfig):
         runner.load(
             str(resume_path), load_cfg={"actor": True}, strict=True, map_location=device
         )
-        policy = runner.get_inference_policy(device=device)
+        policy = runner.get_inference_policy_student(device=device)
 
     # Handle "auto" viewer selection.
     if cfg.viewer == "auto":

@@ -8,9 +8,11 @@
 from .cnn_model import CNNModel
 from .mlp_model import MLPModel
 from .rnn_model import RNNModel
+from .ts_model import TSModel
 
 __all__ = [
     "CNNModel",
     "MLPModel",
     "RNNModel",
+    "TSModel",
 ]
