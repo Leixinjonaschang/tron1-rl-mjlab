@@ -22,6 +22,7 @@ from mjlab.utils.lab_api.math import (
 )
 
 from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
+from mjlab.viewer.debug_visualizer import DebugVisualizer
 
 
 # UniformPoseCommand from IsaacLab
@@ -282,6 +283,24 @@ class UniformWorldPoseCommand(UniformPoseCommand):
             self.pose_command_vel_c[env_ids, 0] = r.uniform_(*self.cfg.ranges.vel_x)
             self.pose_command_vel_c[env_ids, 1] = r.uniform_(*self.cfg.ranges.vel_y)
             self.pose_command_vel_c[env_ids, 2] = r.uniform_(*self.cfg.ranges.vel_yaw)
+
+    def _debug_vis_impl(self, visualizer: DebugVisualizer) -> None:
+        for env_idx in visualizer.get_env_indices(self.num_envs):
+            target_pos = self.pose_command_w[env_idx, :3]
+            target_quat = self.pose_command_w[env_idx, 3:]  # (qw, qx, qy, qz)
+            rot_mat = quaternion_to_matrix(target_quat.unsqueeze(0)).squeeze(0)
+            visualizer.add_frame(
+                position=target_pos,
+                rotation_matrix=rot_mat,
+                scale=0.3,
+                label=f"cmd_{env_idx}",
+            )
+            visualizer.add_sphere(
+                center=target_pos,
+                radius=0.04,
+                color=(1.0, 0.5, 0.0, 0.8),
+                label=f"cmd_sphere_{env_idx}",
+            )
 
     def _resample(self, env_ids):
         # resample the time left before resampling
