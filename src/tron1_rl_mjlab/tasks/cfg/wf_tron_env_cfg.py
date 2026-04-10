@@ -49,15 +49,10 @@ def make_commands() -> dict[str, CommandTermCfg]:
                 # pos lin
                 pos_x=(-0.2, 0.2),  # min max [m]
                 pos_y=(-0.2, 0.2),  # min max [m]
-                # pos_x=(-2.0, 2.0),  # min max [m]
-                # pos_y=(-2.0, 2.0),  # min max [m]
-
                 # vel
                 vel_x=(-0.0, 0.0),  # min max [m/s] in target frame
                 vel_y=(-0.0, 0.0),  # min max [m/s] in target frame
                 vel_yaw=(-0.0, 0.0),  # min max [rad/s]
-                # vel_x=(-1.0, 1.0),  # min max [m/s] in target frame
-                # vel_y=(-1.0, 1.0),  # min max [m/s] in target frame
             ),
             se3_decrease_vel_range=(0.5, 1.4),
         )
@@ -400,15 +395,15 @@ def make_curriculum() -> dict[str, CurriculumTermCfg]:
         "pos_commands_ranges_level": CurriculumTermCfg(
             func=mdp.pos_commands_ranges_level,
             params={
-                "max_range": {
-                    # pos
-                    "pos_x": (-1.0, 1.0),
-                    "pos_y": (-1.0, 1.0),
+                "max_range": mdp.UniformWorldPoseCommandCfg.Ranges(
+                    # pos lin
+                    pos_x=(-2.0, 2.0),
+                    pos_y=(-2.0, 2.0),
                     # vel
-                    "vel_x": (-1.0, 1.0),
-                    "vel_y": (-1.0, 1.0),
-                    "vel_yaw": (-2.0, 2.0),
-                },
+                    vel_x=(-1.0, 1.0),
+                    vel_y=(-1.0, 1.0),
+                    vel_yaw=(-2.0, 2.0),
+                ),
                 "update_interval": 80 * 24,  # 80 iterations * 24 steps per iteration
                 "command_name": "base_pose",
             },
@@ -450,4 +445,7 @@ def make_wf_tron_play_env_cfg() -> ManagerBasedRlEnvCfg:
     """Factory function to create WF-TRON environment configuration for play."""
     env_cfg = deepcopy(make_wf_tron_env_cfg())
     env_cfg.scene.num_envs = 4
+    env_cfg.commands["base_pose"].ranges = deepcopy(
+        env_cfg.curriculum["pos_commands_ranges_level"].params["max_range"]
+    )
     return env_cfg
