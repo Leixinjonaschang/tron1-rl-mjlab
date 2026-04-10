@@ -188,7 +188,7 @@ def make_events() -> dict[str, EventTermCfg]:
             func=mdp.dr.body_mass,
             mode="startup",
             params={
-                "ranges": (-2.0, 5.0),
+                "ranges": (-0.5, 2.0),
                 "operation": "add",
                 "distribution": "uniform",
                 "asset_cfg": SceneEntityCfg("robot", body_names="base_Link"),
@@ -223,9 +223,9 @@ def make_events() -> dict[str, EventTermCfg]:
             mode="startup",
             params={
                 "ranges": {
-                    0: (-0.075, 0.075),  # X axis
-                    1: (-0.075, 0.075),  # Y axis
-                    2: (-0.075, 0.075),  # Z axis
+                    0: (-0.03, 0.03),  # X axis
+                    1: (-0.03, 0.03),  # Y axis
+                    2: (-0.03, 0.03),  # Z axis
                 },
                 "operation": "add",
                 "distribution": "uniform",
@@ -258,9 +258,9 @@ def make_events() -> dict[str, EventTermCfg]:
         ),
         "randomize_joint_stiffness": EventTermCfg(
             func=mdp.dr.joint_stiffness,
-            mode="reset",
+            mode="startup",
             params={
-                "ranges": (0.5, 2.0),
+                "ranges": (0.8, 1.2),
                 "operation": "scale",
                 "distribution": "log_uniform",
                 "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
@@ -268,9 +268,9 @@ def make_events() -> dict[str, EventTermCfg]:
         ),
         "randomize_joint_damping": EventTermCfg(
             func=mdp.dr.joint_damping,
-            mode="reset",
+            mode="startup",
             params={
-                "ranges": (0.5, 2.0),
+                "ranges": (0.8, 1.2),
                 "operation": "scale",
                 "distribution": "log_uniform",
                 "asset_cfg": SceneEntityCfg("robot", joint_names=".*"),
@@ -280,7 +280,7 @@ def make_events() -> dict[str, EventTermCfg]:
         "push_robot": EventTermCfg(
             func=mdp.push_by_setting_velocity,
             mode="interval",
-            interval_range_s=(1.0, 3.0),
+            interval_range_s=(10.0, 15.0),
             params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}}
         ),
     }
@@ -449,5 +449,5 @@ def make_wf_tron_env_cfg() -> ManagerBasedRlEnvCfg:
 def make_wf_tron_play_env_cfg() -> ManagerBasedRlEnvCfg:
     """Factory function to create WF-TRON environment configuration for play."""
     env_cfg = deepcopy(make_wf_tron_env_cfg())
-    env_cfg.scene.num_envs = 8
+    env_cfg.scene.num_envs = 4
     return env_cfg

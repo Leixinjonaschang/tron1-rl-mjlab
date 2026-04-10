@@ -33,32 +33,49 @@ def safety_reward_exp(
 
     foot_pos_error_b = foot_position_b[:, :, :2] - env._nominal_foot_position_b[:, :2]
 
-    # Abduction
-    abduction = ((env._nominal_foot_position_b[:, 1] > 0.0) * (foot_pos_error_b[:, :, 1] < 0.0)) | (
+    # adduction penalized harder
+    adduction = ((env._nominal_foot_position_b[:, 1] > 0.0) * (foot_pos_error_b[:, :, 1] < 0.0)) | (
             (env._nominal_foot_position_b[:, 1] < 0.0) * (foot_pos_error_b[:, :, 1] > 0.0)
     )
 
     foot_pos_error_b[:, :, 1] = torch.where(
-        abduction, foot_pos_error_b[:, :, 1] / 0.1, foot_pos_error_b[:, :, 1] / 0.2
+        adduction, foot_pos_error_b[:, :, 1] / 0.1, foot_pos_error_b[:, :, 1] / 0.2
     )
     foot_pos_error_b[:, :, 0] = foot_pos_error_b[:, :, 0] / 0.2
 
     foot_pos_error_b = torch.sum(torch.sum(foot_pos_error_b.abs(), dim=-1), dim=-1)
     foot_pos_error_b = torch.clamp(foot_pos_error_b, max=8.0)
 
-    # Compute base error
+    # Compute base posture error
     base_orient_error_roll = torch.abs(asset.data.projected_gravity_b[:, 1]) / 0.1
     base_orient_error_pitch = torch.abs(asset.data.projected_gravity_b[:, 0]) / 0.85
     base_height_error = ((base_height - base_height_target) / 0.1) ** 2
 
+    # Compute base velocity error (penalizes spinning and fast motion)
+    wheel_vel_error = (torch.sum(torch.abs(asset.data.joint_vel[:, env._wheels_joint_ids]), dim=1) / 3.0).clip(max=4)
+    base_lin_vel_error = torch.norm(asset.data.root_link_lin_vel_b, p=2, dim=1) / 0.5
+    base_ang_vel_error = torch.norm(asset.data.root_link_ang_vel_b, p=2, dim=1) / 1.2
+
+    normalized_mani_error = (
+        foot_pos_error_b
+        + wheel_vel_error
+        + base_lin_vel_error
+        + base_ang_vel_error
+        + base_height_error * 0.5
+        + base_orient_error_roll * 0.5
+        + base_orient_error_pitch * 0.25
+    ) / 8.0
+
     normalized_loco_error = (foot_pos_error_b / 2.0 + base_orient_error_pitch
                              + base_orient_error_roll + base_height_error * 2.0) / 5.0
 
+    mani_safety_scale = torch.exp(-normalized_mani_error / std ** 2)
     loco_safety_scale = torch.exp(-normalized_loco_error / std ** 2)
 
+    env._mani_safety_scale = mani_safety_scale + 0.4
     env._loco_safety_scale = loco_safety_scale + 0.4
 
-    return loco_safety_scale
+    return mani_safety_scale * 0.5 + loco_safety_scale * 0.5
 
 
 def track_base_position_exp(
