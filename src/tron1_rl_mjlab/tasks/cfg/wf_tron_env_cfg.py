@@ -168,7 +168,7 @@ def make_observations() -> dict[str, ObservationGroupCfg]:
             flatten_history_dim=True,
         ),
         "critic": ObservationGroupCfg(
-            terms=critic_terms,
+            terms=commands_terms | critic_terms,
             enable_corruption=False,
             concatenate_terms=True,
         ),
