@@ -39,6 +39,8 @@ class PlayConfig:
     viewer: Literal["auto", "native", "viser"] = "auto"
     no_terminations: bool = False
     """Disable all termination conditions (useful for viewing motions with dummy agents)."""
+    export_onnx: bool = False
+    """Export the student policy as an ONNX file to the checkpoint directory, then exit."""
 
     # Internal flag used by demo script.
     _demo_mode: tyro.conf.Suppress[bool] = False
@@ -235,6 +237,10 @@ def run_play(task_id: str, cfg: PlayConfig):
         runner.load(
             str(resume_path), load_cfg={"actor": True}, strict=True, map_location=device
         )
+        if cfg.export_onnx:
+            assert log_dir is not None
+            runner.export_policy_to_onnx(str(log_dir), "policy.onnx")
+            print(f"[INFO]: Exported student policy to {log_dir / 'policy.onnx'}")
         policy = runner.get_inference_policy_student(device=device)
 
     # Handle "auto" viewer selection.
