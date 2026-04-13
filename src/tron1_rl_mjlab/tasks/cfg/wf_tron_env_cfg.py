@@ -23,8 +23,8 @@ from .. import mdp
 DEPTH_CAMERA_CFG = CameraSensorCfg(
     name="depth_camera",
     parent_body="robot/base_Link",
-    pos=(0.1, 0.0, 0.1),
-    quat=(0.793, 0.0, -0.609, 0.0),  # forward-facing with ~15° downward tilt
+    pos=(0.13223, 0.0222, -0.26826),
+    quat=(0.968, 0.0, -0.251, 0.0),  # forward-facing with ~61° downward tilt (from URDF pitch 1.06 rad)
     data_types=("depth",),
     width=128,
     height=128,
