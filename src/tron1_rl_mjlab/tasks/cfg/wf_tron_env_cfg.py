@@ -11,6 +11,7 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
+from mjlab.sensor import CameraSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.utils.noise import GaussianNoiseCfg
 from mjlab.viewer import ViewerConfig
@@ -19,11 +20,24 @@ from ...assets.wf_tron.wf_tron import WF_TRON_ROBOT_CFG
 from .terrain_cfg import TERRAINS_ENTITY_CFG, PLANE_ENTITY_CFG
 from .. import mdp
 
+DEPTH_CAMERA_CFG = CameraSensorCfg(
+    name="depth_camera",
+    parent_body="robot/base_Link",
+    pos=(0.1, 0.0, 0.1),
+    quat=(0.793, 0.0, -0.609, 0.0),  # forward-facing with ~15° downward tilt
+    data_types=("depth",),
+    width=128,
+    height=128,
+    use_textures=False,
+    use_shadows=False,
+)
+
 SCENE_CFG = SceneCfg(
     num_envs=4096,
     extent=1.0,
     terrain=PLANE_ENTITY_CFG,
     entities={"robot": WF_TRON_ROBOT_CFG},
+    sensors=(DEPTH_CAMERA_CFG,),
 )
 
 VIEWER_CONFIG = ViewerConfig(
@@ -149,6 +163,10 @@ def make_observations() -> dict[str, ObservationGroupCfg]:
         "foot_rel_position_w": ObservationTermCfg(func=mdp.foot_rel_position_w, scale=1.5),
     }
 
+    depth_camera_terms = {
+        "depth": ObservationTermCfg(func=mdp.depth_image),
+    }
+
     return {
         "actor": ObservationGroupCfg(
             terms=commands_terms | policy_terms,
@@ -166,6 +184,11 @@ def make_observations() -> dict[str, ObservationGroupCfg]:
             terms=commands_terms | critic_terms,
             enable_corruption=False,
             concatenate_terms=True,
+        ),
+        "depth_camera": ObservationGroupCfg(
+            terms=depth_camera_terms,
+            enable_corruption=False,
+            concatenate_terms=False,
         ),
     }
 

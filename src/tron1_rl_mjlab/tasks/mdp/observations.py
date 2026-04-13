@@ -7,6 +7,7 @@ import torch
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
+from mjlab.sensor.camera_sensor import CameraSensor
 from mjlab.utils.lab_api.math import (
     matrix_from_quat,
     quat_unique,
@@ -133,3 +134,16 @@ def base_commands_vel_c(
 ) -> torch.Tensor:
     base_pose_command = env.command_manager.get_term(command_name)
     return base_pose_command.pose_command_vel_c
+
+
+def depth_image(
+        env: ManagerBasedRlEnv,
+        sensor_name: str = "depth_camera",
+) -> torch.Tensor:
+    """Depth image from the forward-facing camera.
+
+    Returns shape [num_envs, H, W] (float32).
+    """
+    camera: CameraSensor = env.scene[sensor_name]
+    assert camera.data.depth is not None, f"Sensor '{sensor_name}' has no depth data"
+    return camera.data.depth.squeeze(-1)  # [num_envs, H, W, 1] -> [num_envs, H, W]
