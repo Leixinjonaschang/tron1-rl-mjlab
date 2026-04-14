@@ -274,12 +274,7 @@ def resolve_obs_groups(
 
 def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor) -> None:
     """Raise ``ValueError`` if any environment output contains NaN."""
-    for key, tensor in obs.items():
-        if torch.isnan(tensor).any():
-            raise ValueError(
-                f"The observation group '{key}' returned by the environment contains NaN values. This usually indicates"
-                " a bug in the environment's step() or reset() function."
-            )
+    _check_nan_obs(obs, prefix="")
     if torch.isnan(rewards).any():
         raise ValueError(
             "The rewards returned by the environment contain NaN values. This usually indicates a bug in the"
@@ -290,6 +285,20 @@ def check_nan(obs: TensorDict, rewards: torch.Tensor, dones: torch.Tensor) -> No
             "The dones returned by the environment contain NaN values. This usually indicates a bug in the"
             " environment's termination logic."
         )
+
+
+def _check_nan_obs(td: TensorDict, prefix: str) -> None:
+    """Recursively check for NaN values in a (possibly nested) TensorDict."""
+    for key, value in td.items():
+        full_key = f"{prefix}/{key}" if prefix else key
+        if isinstance(value, TensorDict):
+            _check_nan_obs(value, full_key)
+        elif isinstance(value, torch.Tensor):
+            if torch.isnan(value).any():
+                raise ValueError(
+                    f"The observation '{full_key}' returned by the environment contains NaN values. This usually"
+                    " indicates a bug in the environment's step() or reset() function."
+                )
 
 
 def split_and_pad_trajectories(
