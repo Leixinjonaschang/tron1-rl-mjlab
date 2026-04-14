@@ -217,6 +217,8 @@ class PPO:
         mean_rnd_loss = 0 if self.rnd else None
         # Symmetry loss
         mean_symmetry_loss = 0 if self.symmetry else None
+        # Auxiliary losses (subclass hook)
+        mean_aux_logs: dict[str, float] = {}
 
         # Get mini batch generator
         if self.actor.is_recurrent or self.critic.is_recurrent:
@@ -311,6 +313,14 @@ class PPO:
                 value_loss = (batch.returns - values).pow(2).mean()
 
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+
+            # Auxiliary loss hook (used by subclasses, e.g. PPOWithDecoder)
+            aux_loss, aux_log = self._compute_auxiliary_loss(batch, original_batch_size)
+            loss = loss + aux_loss
+            for k, v in aux_log.items():
+                if k not in mean_aux_logs:
+                    mean_aux_logs[k] = 0.0
+                mean_aux_logs[k] += v
 
             # Symmetry loss
             if self.symmetry:
@@ -412,8 +422,20 @@ class PPO:
             loss_dict["rnd"] = mean_rnd_loss
         if self.symmetry:
             loss_dict["symmetry"] = mean_symmetry_loss
+        loss_dict.update({k: v / num_updates for k, v in mean_aux_logs.items()})
 
         return loss_dict
+
+    def _compute_auxiliary_loss(
+        self, batch: "RolloutStorage.Batch", original_batch_size: int
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Hook for subclasses to add auxiliary losses on top of PPO.
+
+        Called inside the mini-batch loop after the actor forward pass.
+        Returns ``(loss, log_dict)``; the loss is added to the PPO loss and
+        log_dict values are averaged and included in the returned loss_dict.
+        """
+        return torch.zeros(1, device=self.device).squeeze(), {}
 
     def train_mode(self) -> None:
         """Set train mode for learnable models."""

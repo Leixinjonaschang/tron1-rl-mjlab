@@ -25,8 +25,8 @@ DEPTH_CAMERA_CFG = CameraSensorCfg(
     name="depth_camera",
     camera_name="robot/d435",  # wraps the camera defined in robot.xml
     data_types=("depth",),
-    width=128,
-    height=128,
+    width=64,
+    height=64,
     use_textures=False,
     use_shadows=False,
     enabled_geom_groups=(0, 1),  # terrain + visual meshes only; exclude collision geoms (group 2)
@@ -43,7 +43,7 @@ HEIGHT_SCAN_CFG = RayCastSensorCfg(
 )
 
 SCENE_CFG = SceneCfg(
-    num_envs=4096,
+    num_envs=1024,
     extent=1.0,
     terrain=PLANE_ENTITY_CFG,
     entities={"robot": WF_TRON_ROBOT_CFG},
@@ -205,7 +205,7 @@ def make_observations() -> dict[str, ObservationGroupCfg]:
         "depth_camera": ObservationGroupCfg(
             terms=depth_camera_terms,
             enable_corruption=True,
-            concatenate_terms=False,
+            concatenate_terms=True,
         ),
         "height_map": ObservationGroupCfg(
             terms=height_map_terms,
