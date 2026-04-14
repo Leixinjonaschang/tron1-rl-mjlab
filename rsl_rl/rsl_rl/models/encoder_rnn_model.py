@@ -3,7 +3,17 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Actor model: 3D CNN (depth history) + MLP (proprio) → GRU → latent."""
+"""Actor model: 2D CNN (current depth frame) + MLP (proprio) → GRU → latent.
+
+The CNN runs with no_grad for the GRU forward pass so the PPO and GRU-decoder
+gradients do NOT flow through the CNN.  A second CNN forward pass (with grad)
+is triggered inside get_last_decoder_outputs() to build the CNN-decoder loss
+computation graph separately.
+
+This avoids storing the full Conv2d activation volume for all T_rollout × B_mini
+samples simultaneously — the no_grad pass discards activations immediately, and
+the with-grad pass only materialises activations for the decoder loss.
+"""
 
 from __future__ import annotations
 
@@ -17,23 +27,25 @@ from rsl_rl.utils import resolve_nn_activation, unpad_trajectories
 
 
 class EncoderRNNActorModel(MLPModel):
-    """Actor with dual encoders feeding a GRU, plus auxiliary decoder heads.
+    """Actor with dual encoders feeding a GRU, plus four auxiliary decoder heads.
 
     Forward path::
 
-        actor obs  [B, D_actor]    → MLP proprio encoder  → [B, D_proprio]
-        depth obs  [B, T, H, W]    → 3D CNN encoder       → [B, D_vision]
-        cat([proprio, vision])     → GRU                  → [B, D_gru]
-        cat([actor_obs, gru_out])  → actor head MLP       → actions
+        actor obs  [B, D_actor]  → MLP proprio encoder  → [B, D_proprio]
+        depth obs  [B, H, W]     → 2D CNN (no_grad)      → [B, D_vision]
+        cat([proprio, vision])   → GRU                  → [B, D_gru]
+        cat([actor_obs, gru_out]) → actor head MLP       → actions
 
-    Auxiliary decoder heads (used for supervised reconstruction loss)::
+    Two independent sets of decoder heads (Option B)::
 
-        gru_latent → privileged_decoder → D_privileged
-        gru_latent → height_map_decoder → D_height_map
+        gru_latent → privileged_decoder     → D_privileged  (gradient: GRU + decoder)
+        gru_latent → height_map_decoder     → D_height_map  (gradient: GRU + decoder)
+        cnn_feat   → cnn_privileged_decoder → D_privileged  (gradient: CNN + decoder)
+        cnn_feat   → cnn_height_map_decoder → D_height_map  (gradient: CNN + decoder)
 
-    The decoder targets are expected to live in separate obs groups (``critic``
-    and ``height_map``) that are NOT in ``obs_groups["actor"]`` but ARE stored
-    in rollout (because they are in ``obs_groups["critic"]``).
+    The CNN decoder path is built by re-running the CNN with grad inside
+    ``get_last_decoder_outputs()``.  The depth input from the most recent
+    ``get_latent()`` call is cached for this purpose.
 
     Args:
         obs: Sample observation TensorDict from the environment.
@@ -47,16 +59,16 @@ class EncoderRNNActorModel(MLPModel):
         actor_obs_group: Name of the 1D proprioceptive obs group.
         proprio_encoder_hidden_dims: Hidden dims of the proprioceptive MLP encoder.
         proprio_encoder_output_dim: Output dim of the proprioceptive encoder.
-        depth_obs_group: Name of the depth-image obs group (shape [B, T, H, W]).
-        cnn3d_output_channels: Output channel counts for each Conv3d layer.
-        cnn3d_kernel_size: Kernel size shared across all Conv3d layers.
-        cnn3d_strides: Stride for each Conv3d layer (scalar applied to all dims).
-        cnn3d_output_dim: Output dim of the 3D CNN (after linear projection).
+        depth_obs_group: Name of the depth-image obs group (shape [B, H, W]).
+        cnn_output_channels: Output channel counts for each Conv2d layer.
+        cnn_kernel_size: Kernel size shared across all Conv2d layers.
+        cnn_strides: Stride for each Conv2d layer.
+        cnn_output_dim: Output dim of the 2D CNN (after linear projection).
         rnn_hidden_dim: GRU hidden state dimension.
         rnn_num_layers: Number of GRU layers.
         privileged_decoder_obs_group: Obs group used to infer privileged target dim.
         height_map_decoder_obs_group: Obs group used to infer height-map target dim.
-        decoder_hidden_dims: Hidden dims of both decoder MLPs.
+        decoder_hidden_dims: Hidden dims shared by all four decoder MLPs.
     """
 
     is_recurrent: bool = True
@@ -75,12 +87,12 @@ class EncoderRNNActorModel(MLPModel):
         actor_obs_group: str = "actor",
         proprio_encoder_hidden_dims: tuple[int, ...] = (256, 128),
         proprio_encoder_output_dim: int = 64,
-        # 3D CNN
+        # 2D CNN
         depth_obs_group: str = "depth_camera",
-        cnn3d_output_channels: tuple[int, ...] = (32, 64, 64),
-        cnn3d_kernel_size: int = 3,
-        cnn3d_strides: tuple[int, ...] = (1, 2, 2),
-        cnn3d_output_dim: int = 128,
+        cnn_output_channels: tuple[int, ...] = (32, 64, 64),
+        cnn_kernel_size: int = 3,
+        cnn_strides: tuple[int, ...] = (2, 2, 2),
+        cnn_output_dim: int = 128,
         # GRU
         rnn_hidden_dim: int = 256,
         rnn_num_layers: int = 1,
@@ -107,38 +119,44 @@ class EncoderRNNActorModel(MLPModel):
             proprio_encoder_hidden_dims, activation,
         )
 
-        # --- 3D CNN ------------------------------------------------------------
-        # Input shape: [B, 1, T, H, W]
-        # AdaptiveAvgPool3d(1) collapses spatial + temporal dims unconditionally.
-        cnn3d_layers: list[nn.Module] = []
+        # --- 2D CNN ------------------------------------------------------------
+        # Input: [B, 1, H, W]  (channel dim added by unsqueeze before passing)
+        # All strides default to 2 so spatial dims halve at each layer.
+        cnn_layers: list[nn.Module] = []
         in_ch = 1
-        for out_ch, stride in zip(cnn3d_output_channels, cnn3d_strides):
-            pad = cnn3d_kernel_size // 2
-            cnn3d_layers += [
-                nn.Conv3d(in_ch, out_ch, kernel_size=cnn3d_kernel_size,
+        for out_ch, stride in zip(cnn_output_channels, cnn_strides):
+            pad = cnn_kernel_size // 2
+            cnn_layers += [
+                nn.Conv2d(in_ch, out_ch, kernel_size=cnn_kernel_size,
                           stride=stride, padding=pad),
                 act_fn,
             ]
             in_ch = out_ch
-        cnn3d_layers += [
-            nn.AdaptiveAvgPool3d(1),     # → [B, C, 1, 1, 1]
-            nn.Flatten(),                # → [B, C]
-            nn.Linear(in_ch, cnn3d_output_dim),
+        cnn_layers += [
+            nn.AdaptiveAvgPool2d(1),  # → [B, C, 1, 1]
+            nn.Flatten(),             # → [B, C]
+            nn.Linear(in_ch, cnn_output_dim),
             act_fn,
         ]
-        self.cnn3d = nn.Sequential(*cnn3d_layers)
+        self.cnn2d = nn.Sequential(*cnn_layers)
 
         # --- GRU ---------------------------------------------------------------
-        gru_input_dim = proprio_encoder_output_dim + cnn3d_output_dim
+        gru_input_dim = proprio_encoder_output_dim + cnn_output_dim
         self.rnn = RNN(gru_input_dim, rnn_hidden_dim, rnn_num_layers, "gru")
 
-        # --- Decoder heads -----------------------------------------------------
+        # --- GRU decoder heads (gradient flows to GRU + these decoders) --------
         privileged_dim = int(obs[privileged_decoder_obs_group].shape[-1])
         height_map_dim = int(obs[height_map_decoder_obs_group].shape[-1])
         self.privileged_decoder = MLP(rnn_hidden_dim, privileged_dim, decoder_hidden_dims, activation)
         self.height_map_decoder = MLP(rnn_hidden_dim, height_map_dim, decoder_hidden_dims, activation)
 
+        # --- CNN decoder heads (gradient flows to CNN + these decoders) ---------
+        self.cnn_privileged_decoder = MLP(cnn_output_dim, privileged_dim, decoder_hidden_dims, activation)
+        self.cnn_height_map_decoder = MLP(cnn_output_dim, height_map_dim, decoder_hidden_dims, activation)
+
         self._last_gru_latent: torch.Tensor | None = None
+        self._last_depth_input: torch.Tensor | None = None
+        self._last_batch_mode: bool = False
 
     # ------------------------------------------------------------------
     # MLPModel overrides
@@ -147,26 +165,24 @@ class EncoderRNNActorModel(MLPModel):
     def _get_obs_dim(
         self, obs: TensorDict, obs_groups: dict[str, list[str]], obs_set: str
     ) -> tuple[list[str], int]:
-        """Classify each active obs group as 1D (MLP) or multi-dim (CNN), return 1D groups."""
+        """Classify each active obs group as 1D (MLP) or image (CNN); return 1D groups."""
         active_groups = obs_groups[obs_set]
         obs_groups_1d: list[str] = []
         obs_dim_1d = 0
         for group in active_groups:
             shape = obs[group].shape
             if len(shape) > 2:
-                # Multi-dimensional group: only the designated depth group is expected
                 if group != self._depth_obs_group:
                     raise ValueError(
                         f"Unexpected multi-dimensional obs group '{group}'. "
-                        f"Only '{self._depth_obs_group}' is handled by the 3D CNN."
+                        f"Only '{self._depth_obs_group}' is handled by the 2D CNN."
                     )
-                continue  # handled by cnn3d
+                continue  # handled by cnn2d
             obs_groups_1d.append(group)
             obs_dim_1d += shape[-1]
         return obs_groups_1d, obs_dim_1d
 
     def _get_latent_dim(self) -> int:
-        """Input to the actor head MLP = concat(actor_obs, gru_out)."""
         return self.obs_dim + self._rnn_hidden_dim
 
     def get_latent(
@@ -177,38 +193,42 @@ class EncoderRNNActorModel(MLPModel):
     ) -> torch.Tensor:
         """Encode obs and return ``cat(actor_obs_normed, gru_latent)``."""
         batch_mode = masks is not None
+        self._last_batch_mode = batch_mode
 
-        # Collect and normalise 1D obs (same contract as MLPModel)
+        # 1D obs
         obs_1d = torch.cat([obs[g] for g in self.obs_groups], dim=-1)
-        obs_1d_normed = self.obs_normalizer(obs_1d)  # shape: [..., D_actor]
+        obs_1d_normed = self.obs_normalizer(obs_1d)
 
-        # Depth images: [..., T_depth, H, W]
+        # Depth: [B, H, W] in rollout mode; [T_max, B_mini, H, W] in batch mode
         depth = obs[self._depth_obs_group]
+        self._last_depth_input = depth  # cache for CNN decoder re-run (with grad)
 
         if batch_mode:
-            # Padded trajectories: first two dims are [T_max, B_traj]
-            prefix = depth.shape[:2]  # (T_max, B_traj)
+            prefix = depth.shape[:2]  # (T_max, B_mini)
 
-            # Proprio encoder: nn.Linear broadcasts over leading dims
-            proprio_enc = self.proprio_encoder(obs_1d_normed)  # [T_max, B_traj, D_proprio]
+            # Proprio: nn.Linear broadcasts over leading dims
+            proprio_enc = self.proprio_encoder(obs_1d_normed)  # [T, B, D_proprio]
 
-            # 3D CNN: flatten leading dims, add channel dim, run CNN, unflatten
-            depth_flat = depth.flatten(0, 1).unsqueeze(1)        # [T_max*B_traj, 1, T, H, W]
-            vision_enc_flat = self.cnn3d(depth_flat)              # [T_max*B_traj, D_vision]
-            vision_enc = vision_enc_flat.view(*prefix, -1)        # [T_max, B_traj, D_vision]
+            # CNN — no_grad so PPO loss does not flow through CNN
+            with torch.no_grad():
+                depth_flat = depth.flatten(0, 1).unsqueeze(1)       # [T*B, 1, H, W]
+                vision_enc_flat = self.cnn2d(depth_flat)             # [T*B, D_vision]
+            vision_enc = vision_enc_flat.detach().view(*prefix, -1)  # [T, B, D_vision]
 
-            # GRU: input [T_max, B_traj, D], output unpadded [B_valid, D_gru]
+            # GRU: outputs unpadded [B_valid, D_gru]
             gru_input = torch.cat([proprio_enc, vision_enc], dim=-1)
-            gru_latent = self.rnn(gru_input, masks, hidden_state)  # [B_valid, D_gru]
+            gru_latent = self.rnn(gru_input, masks, hidden_state)
 
             # Unpad 1D obs to match GRU output length
-            actor_obs = unpad_trajectories(obs_1d_normed, masks)   # [B_valid, D_actor]
+            actor_obs = unpad_trajectories(obs_1d_normed, masks)
         else:
             # Rollout mode: [B, ...]
-            proprio_enc = self.proprio_encoder(obs_1d_normed)       # [B, D_proprio]
-            vision_enc = self.cnn3d(depth.unsqueeze(1))             # [B, D_vision]
+            proprio_enc = self.proprio_encoder(obs_1d_normed)        # [B, D_proprio]
+            with torch.no_grad():
+                vision_enc = self.cnn2d(depth.unsqueeze(1))          # [B, D_vision]
+            vision_enc = vision_enc.detach()
             gru_input = torch.cat([proprio_enc, vision_enc], dim=-1)
-            gru_latent = self.rnn(gru_input, None, None).squeeze(0) # [B, D_gru]
+            gru_latent = self.rnn(gru_input, None, None).squeeze(0)  # [B, D_gru]
             actor_obs = obs_1d_normed
 
         self._last_gru_latent = gru_latent
@@ -218,18 +238,46 @@ class EncoderRNNActorModel(MLPModel):
     # Decoder interface (called by PPOWithDecoder)
     # ------------------------------------------------------------------
 
-    def get_last_decoder_outputs(self) -> dict[str, torch.Tensor] | None:
-        """Return decoder predictions from the most recent forward pass.
+    def get_last_decoder_outputs(self, masks: torch.Tensor | None = None) -> dict[str, torch.Tensor] | None:
+        """Return all four decoder predictions.
+
+        GRU decoder outputs use the cached ``_last_gru_latent`` (already
+        unpadded by the GRU module).
+
+        CNN decoder outputs re-run the CNN **with grad** on the cached depth
+        input so the CNN parameters receive gradients from the CNN decoder loss.
+        The CNN features are unpadded using ``masks`` when in batch mode.
 
         Returns ``None`` if ``get_latent`` has not been called yet.
         """
         if self._last_gru_latent is None:
             return None
-        latent = self._last_gru_latent
-        return {
-            "privileged": self.privileged_decoder(latent),
-            "height_map": self.height_map_decoder(latent),
-        }
+
+        outputs: dict[str, torch.Tensor] = {}
+
+        # GRU decoder heads
+        outputs["privileged"] = self.privileged_decoder(self._last_gru_latent)
+        outputs["height_map"] = self.height_map_decoder(self._last_gru_latent)
+
+        # CNN decoder heads — re-run CNN with gradient
+        if self._last_depth_input is not None:
+            depth = self._last_depth_input
+            if self._last_batch_mode:
+                prefix = depth.shape[:2]  # (T_max, B_mini)
+                depth_flat = depth.flatten(0, 1).unsqueeze(1)       # [T*B, 1, H, W]
+                cnn_feat = self.cnn2d(depth_flat)                   # [T*B, D_vision]
+                cnn_feat = cnn_feat.view(*prefix, -1)               # [T, B, D_vision]
+                if masks is not None:
+                    cnn_feat = unpad_trajectories(cnn_feat, masks)  # [B_valid, D_vision]
+                else:
+                    cnn_feat = cnn_feat.flatten(0, 1)
+            else:
+                cnn_feat = self.cnn2d(depth.unsqueeze(1))           # [B, D_vision]
+
+            outputs["cnn_privileged"] = self.cnn_privileged_decoder(cnn_feat)
+            outputs["cnn_height_map"] = self.cnn_height_map_decoder(cnn_feat)
+
+        return outputs
 
     # ------------------------------------------------------------------
     # Recurrent interface

@@ -177,8 +177,6 @@ def make_observations() -> dict[str, ObservationGroupCfg]:
         "depth_camera": ObservationTermCfg(
             func=mdp.depth_image,
             noise=GaussianNoiseCfg(mean=0.0, std=0.01),
-            history_length=5,
-            flatten_history_dim=False,
         ),
     }
 

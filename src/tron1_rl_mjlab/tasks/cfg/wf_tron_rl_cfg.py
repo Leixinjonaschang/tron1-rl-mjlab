@@ -7,7 +7,9 @@ from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 class RslRlEncoderRNNActorCfg(RslRlModelCfg):
     """Actor config for EncoderRNNActorModel.
 
-    Architecture: 3D CNN (depth history) + MLP (proprio) → GRU → actor head.
+    Architecture: 2D CNN (current depth frame) + MLP (proprio) → GRU → actor head.
+    The CNN runs no_grad for the GRU path; a separate with_grad CNN pass trains
+    the CNN decoder heads.
     """
 
     class_name: str = "rsl_rl.models:EncoderRNNActorModel"
@@ -17,18 +19,20 @@ class RslRlEncoderRNNActorCfg(RslRlModelCfg):
     proprio_encoder_hidden_dims: tuple = (256, 128)
     proprio_encoder_output_dim: int = 64
 
-    # 3D CNN for temporal depth images
+    # 2D CNN for current depth image
     depth_obs_group: str = "depth_camera"
-    cnn3d_output_channels: tuple = (32, 64, 64)
-    cnn3d_kernel_size: int = 3
-    cnn3d_strides: tuple = (1, 2, 2)
-    cnn3d_output_dim: int = 128
+    cnn_output_channels: tuple = (32, 64, 64)
+    cnn_kernel_size: int = 3
+    cnn_strides: tuple = (2, 2, 2)
+    cnn_output_dim: int = 128
 
     # GRU that fuses proprio + vision encodings
     rnn_hidden_dim: int = 256
     rnn_num_layers: int = 1
 
-    # Decoder heads: reconstruct privileged obs + height map from GRU latent
+    # Decoder heads: reconstruct privileged obs + height map
+    # GRU decoder: trains GRU + decoders
+    # CNN decoder: trains CNN + cnn_decoders
     privileged_decoder_obs_group: str = "critic"
     height_map_decoder_obs_group: str = "height_map"
     decoder_hidden_dims: tuple = (256, 128)
@@ -44,7 +48,7 @@ class RslRlPPOWithDecoderAlgorithmCfg(RslRlPpoAlgorithmCfg):
     privileged_obs_group: str = "critic"
     height_map_obs_group: str = "height_map"
 
-    # Weight on the total reconstruction loss (privileged + height map)
+    # Weight on the total reconstruction loss (GRU + CNN decoders)
     recon_loss_coef: float = 1.0
 
 
@@ -57,7 +61,7 @@ def make_wf_tron_rl_cfg() -> RslRlOnPolicyRunnerCfg:
         wandb_project="mjlab_wf_tron",
         experiment_name="wf_tron",
         obs_groups={
-            # Actor receives current proprio + depth image history
+            # Actor receives current proprio + depth image
             "actor": ("actor", "depth_camera"),
             # Critic receives privileged obs + height map (concatenated by MLPModel)
             "critic": ("critic", "height_map"),
