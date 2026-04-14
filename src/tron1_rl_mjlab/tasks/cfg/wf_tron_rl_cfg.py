@@ -72,6 +72,7 @@ def make_wf_tron_rl_cfg() -> RslRlOnPolicyRunnerCfg:
             },
         ),
         critic=RslRlModelCfg(
+            class_name="rsl_rl.models:MLPModel",
             hidden_dims=(512, 256, 128),
             activation="elu",
         ),

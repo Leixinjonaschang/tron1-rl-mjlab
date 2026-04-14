@@ -45,7 +45,7 @@ HEIGHT_SCAN_CFG = RayCastSensorCfg(
 SCENE_CFG = SceneCfg(
     num_envs=1024,
     extent=1.0,
-    terrain=PLANE_ENTITY_CFG,
+    terrain=TERRAINS_ENTITY_CFG,
     entities={"robot": WF_TRON_ROBOT_CFG},
     sensors=(DEPTH_CAMERA_CFG, HEIGHT_SCAN_CFG),
 )
