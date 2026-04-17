@@ -6,13 +6,13 @@
 """Neural models for the learning algorithm."""
 
 from .cnn_model import CNNModel
+from .encoder_rnn_model import EncoderRNNActorModel
 from .mlp_model import MLPModel
 from .rnn_model import RNNModel
-from .ts_model import TSModel
 
 __all__ = [
     "CNNModel",
+    "EncoderRNNActorModel",
     "MLPModel",
     "RNNModel",
-    "TSModel",
 ]

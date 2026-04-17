@@ -11,7 +11,8 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
-from mjlab.sensor import CameraSensorCfg
+from mjlab.sensor import CameraSensorCfg, ObjRef, RayCastSensorCfg
+from mjlab.sensor.raycast_sensor import GridPatternCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.utils.noise import GaussianNoiseCfg
 from mjlab.viewer import ViewerConfig
@@ -22,22 +23,31 @@ from .. import mdp
 
 DEPTH_CAMERA_CFG = CameraSensorCfg(
     name="depth_camera",
-    parent_body="robot/base_Link",
-    pos=(0.13223, 0.0222, -0.26826),
-    quat=(0.968, 0.0, -0.251, 0.0),  # forward-facing with ~61° downward tilt (from URDF pitch 1.06 rad)
+    camera_name="robot/d435",  # wraps the camera defined in robot.xml
     data_types=("depth",),
-    width=128,
-    height=128,
+    width=64,
+    height=64,
     use_textures=False,
     use_shadows=False,
+    enabled_geom_groups=(0, 1),  # terrain + visual meshes only; exclude collision geoms (group 2)
+)
+
+HEIGHT_SCAN_CFG = RayCastSensorCfg(
+    name="height_scan",
+    frame=ObjRef(type="body", name="base_Link", entity="robot"),
+    pattern=GridPatternCfg(size=(2.0, 2.0), resolution=0.1),
+    ray_alignment="yaw",
+    max_distance=10.0,
+    include_geom_groups=(0,),  # terrain only; robot collision geoms are in group 2
+    debug_vis=True,
 )
 
 SCENE_CFG = SceneCfg(
-    num_envs=4096,
+    num_envs=1024,
     extent=1.0,
-    terrain=PLANE_ENTITY_CFG,
+    terrain=TERRAINS_ENTITY_CFG,
     entities={"robot": WF_TRON_ROBOT_CFG},
-    sensors=(DEPTH_CAMERA_CFG,),
+    sensors=(DEPTH_CAMERA_CFG, HEIGHT_SCAN_CFG),
 )
 
 VIEWER_CONFIG = ViewerConfig(
@@ -164,16 +174,21 @@ def make_observations() -> dict[str, ObservationGroupCfg]:
     }
 
     depth_camera_terms = {
-        "depth": ObservationTermCfg(func=mdp.depth_image),
+        "depth_camera": ObservationTermCfg(
+            func=mdp.depth_image,
+            noise=GaussianNoiseCfg(mean=0.0, std=0.01),
+        ),
+    }
+
+    height_map_terms = {
+        "height_scan": ObservationTermCfg(
+            func=mdp.height_scan,
+            params={"sensor_name": "height_scan"},
+        ),
     }
 
     return {
         "actor": ObservationGroupCfg(
-            terms=commands_terms | policy_terms,
-            enable_corruption=True,
-            concatenate_terms=True,
-        ),
-        "history": ObservationGroupCfg(
             terms=commands_terms | policy_terms,
             enable_corruption=True,
             concatenate_terms=True,
@@ -187,8 +202,13 @@ def make_observations() -> dict[str, ObservationGroupCfg]:
         ),
         "depth_camera": ObservationGroupCfg(
             terms=depth_camera_terms,
+            enable_corruption=True,
+            concatenate_terms=True,
+        ),
+        "height_map": ObservationGroupCfg(
+            terms=height_map_terms,
             enable_corruption=False,
-            concatenate_terms=False,
+            concatenate_terms=True,
         ),
     }
 

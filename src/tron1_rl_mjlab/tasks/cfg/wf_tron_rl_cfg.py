@@ -1,67 +1,74 @@
-from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from dataclasses import dataclass
 
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 
 
 @dataclass
-class RslRlTSActorCfg(RslRlModelCfg):
-    """Model config for TSModel (actor side).
+class RslRlEncoderRNNActorCfg(RslRlModelCfg):
+    """Actor config for EncoderRNNActorModel.
 
-    Extends RslRlModelCfg with dual-encoder parameters.
-    The actor uses the privileged encoder during training and the
-    proprioceptive encoder during student-mode deployment.
+    Architecture: 2D CNN (current depth frame) + MLP (proprio) → GRU → actor head.
+    The CNN runs no_grad for the GRU path; a separate with_grad CNN pass trains
+    the CNN decoder heads.
     """
 
-    class_name: str = "rsl_rl.models:TSModel"
-    encoder_hidden_dims: tuple = (512, 256, 128)
-    """Hidden dims shared by both proprioceptive and privileged encoders."""
-    encoder_latent_dim: int = 32
-    """Output latent dimension of the encoders."""
-    raw_obs_key: str = "actor"
-    """TensorDict key for the raw actor observations."""
-    history_obs_key: Optional[str] = "history"
-    """TensorDict key for the observation history (proprioceptive encoder input)."""
-    privileged_obs_key: str = "critic"
-    """TensorDict key for the privileged observations (privileged encoder input)."""
-    commands_key: Optional[str] = None
-    """TensorDict key for the command/goal vector. None if commands are already in raw_obs_key."""
+    class_name: str = "rsl_rl.models:EncoderRNNActorModel"
 
+    # Proprioceptive MLP encoder
+    actor_obs_group: str = "actor"
+    proprio_encoder_hidden_dims: tuple = (256, 128)
+    proprio_encoder_output_dim: int = 64
+
+    # 2D CNN for current depth image
+    depth_obs_group: str = "depth_camera"
+    cnn_output_channels: tuple = (32, 64, 64)
+    cnn_kernel_size: int = 3
+    cnn_strides: tuple = (2, 2, 2)
+    cnn_output_dim: int = 128
+
+    # GRU that fuses proprio + vision encodings
+    rnn_hidden_dim: int = 256
+    rnn_num_layers: int = 1
+
+    # Decoder heads: reconstruct privileged obs + height map
+    # GRU decoder: trains GRU + decoders
+    # CNN decoder: trains CNN + cnn_decoders
+    privileged_decoder_obs_group: str = "critic"
+    height_map_decoder_obs_group: str = "height_map"
+    decoder_hidden_dims: tuple = (256, 128)
 
 
 @dataclass
-class RslRlTSPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
-    """PPO algorithm config extended with teacher-student training options."""
+class RslRlPPOWithDecoderAlgorithmCfg(RslRlPpoAlgorithmCfg):
+    """PPO with supervised decoder reconstruction loss."""
 
-    class_name: str = "rsl_rl.algorithms:PPO"
-    """Qualified class name so resolve_callable works with the local namespace package."""
-    student_reinforcing: bool = False
-    """If True, train with the proprioceptive encoder in the main loop (no privileged
-    encoder gradient). Used after an initial teacher-supervised phase."""
-    num_proprio_encoder_substeps: int = 1
-    """Extra gradient steps per update to distill the privileged latent into the
-    proprioceptive encoder via MSE loss."""
-    grad_penalty_coef_schedule: Optional[List[float]] = field(
-        default_factory=lambda: [0.002, 0.002, 0, 1]
-    )
-    """Lipschitz gradient-penalty schedule: [start_coef, end_coef, start_step, duration].
-    Set to None to disable the penalty."""
+    class_name: str = "rsl_rl.algorithms:PPOWithDecoder"
+
+    # Obs groups to use as reconstruction targets
+    privileged_obs_group: str = "critic"
+    height_map_obs_group: str = "height_map"
+
+    # Weight on the total reconstruction loss (GRU + CNN decoders)
+    recon_loss_coef: float = 1.0
 
 
 def make_wf_tron_rl_cfg() -> RslRlOnPolicyRunnerCfg:
     """Create RL runner configuration for WF-TRON task."""
     return RslRlOnPolicyRunnerCfg(
         num_steps_per_env=24,
-        max_iterations=15000,
+        max_iterations=4000,
         save_interval=200,
         wandb_project="mjlab_wf_tron",
         experiment_name="wf_tron",
-        obs_groups={"actor": ("actor", "history", "critic"), "critic": ("critic",)},
-        actor=RslRlTSActorCfg(
-            hidden_dims=(512, 256, 128),
+        obs_groups={
+            # Actor receives current proprio + depth image
+            "actor": ("actor", "depth_camera"),
+            # Critic receives privileged obs + height map (concatenated by MLPModel)
+            "critic": ("critic", "height_map"),
+        },
+        actor=RslRlEncoderRNNActorCfg(
+            hidden_dims=(256, 128),
             activation="elu",
-            encoder_hidden_dims=(512, 256, 128),
-            encoder_latent_dim=32,
             distribution_cfg={
                 "class_name": "rsl_rl.modules:GaussianDistribution",
                 "init_std": 1.0,
@@ -69,10 +76,11 @@ def make_wf_tron_rl_cfg() -> RslRlOnPolicyRunnerCfg:
             },
         ),
         critic=RslRlModelCfg(
+            class_name="rsl_rl.models:MLPModel",
             hidden_dims=(512, 256, 128),
             activation="elu",
         ),
-        algorithm=RslRlTSPpoAlgorithmCfg(
+        algorithm=RslRlPPOWithDecoderAlgorithmCfg(
             value_loss_coef=1.0,
             use_clipped_value_loss=True,
             clip_param=0.2,
@@ -85,7 +93,6 @@ def make_wf_tron_rl_cfg() -> RslRlOnPolicyRunnerCfg:
             lam=0.95,
             desired_kl=0.01,
             max_grad_norm=1.0,
-            num_proprio_encoder_substeps=1,
-            grad_penalty_coef_schedule=[0.002, 0.002, 0, 1],
+            recon_loss_coef=1.0,
         ),
     )
